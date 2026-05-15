@@ -29,6 +29,7 @@ export default function StokPage() {
   const [history, setHistory] = useState<StockHistory[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editTarget, setEditTarget] = useState<Product | null>(null);
   const [stokTarget, setStokTarget] = useState<Product | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
   const [filter, setFilter] = useState<FilterKey>("ALL");
@@ -69,18 +70,69 @@ export default function StokPage() {
     loadData();
   }, [loadData]);
 
-  async function handleAddProduct(e: React.FormEvent) {
+  function resetForm() {
+    setForm({ nama: "", kategori: "KONTER", harga_modal: 0, harga_jual: 0, stok: 0, stok_minimum: 5 });
+  }
+
+  function openAdd() {
+    resetForm();
+    setEditTarget(null);
+    setShowForm(true);
+  }
+
+  function openEdit(p: Product) {
+    setForm({
+      nama: p.nama,
+      kategori: p.kategori,
+      harga_modal: p.harga_modal,
+      harga_jual: p.harga_jual,
+      stok: p.stok,
+      stok_minimum: p.stok_minimum,
+    });
+    setEditTarget(p);
+    setShowForm(true);
+  }
+
+  function closeForm() {
+    setShowForm(false);
+    setEditTarget(null);
+    resetForm();
+  }
+
+  async function handleSubmitProduct(e: React.FormEvent) {
     e.preventDefault();
-    setSubmitting(true);
-    const { error } = await supabase.from("products").insert(form);
-    setSubmitting(false);
-    if (error) {
-      toast.error("Gagal menambah barang: " + error.message);
+    if (form.harga_jual < form.harga_modal) {
+      toast.error("Harga jual tidak boleh lebih kecil dari harga modal");
       return;
     }
-    toast.success(`Barang "${form.nama}" ditambahkan`);
-    setShowForm(false);
-    setForm({ nama: "", kategori: "KONTER", harga_modal: 0, harga_jual: 0, stok: 0, stok_minimum: 5 });
+    setSubmitting(true);
+    if (editTarget) {
+      const { error } = await supabase
+        .from("products")
+        .update({
+          nama: form.nama,
+          kategori: form.kategori,
+          harga_modal: form.harga_modal,
+          harga_jual: form.harga_jual,
+          stok_minimum: form.stok_minimum,
+        })
+        .eq("id", editTarget.id);
+      setSubmitting(false);
+      if (error) {
+        toast.error("Gagal menyimpan: " + error.message);
+        return;
+      }
+      toast.success(`"${form.nama}" diperbarui`);
+    } else {
+      const { error } = await supabase.from("products").insert(form);
+      setSubmitting(false);
+      if (error) {
+        toast.error("Gagal menambah barang: " + error.message);
+        return;
+      }
+      toast.success(`Barang "${form.nama}" ditambahkan`);
+    }
+    closeForm();
     loadData();
   }
 
@@ -145,7 +197,7 @@ export default function StokPage() {
             {products.length} barang terdaftar
           </p>
         </div>
-        <Button onClick={() => setShowForm(true)}>
+        <Button onClick={openAdd}>
           <IconPlus size={18} /> Tambah Barang
         </Button>
       </div>
@@ -244,7 +296,16 @@ export default function StokPage() {
                             variant="secondary"
                             onClick={() => setStokTarget(p)}
                           >
-                            <IconEdit size={14} /> Stok
+                            Stok
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openEdit(p)}
+                            aria-label="Edit"
+                            className="!px-2"
+                          >
+                            <IconEdit size={16} />
                           </Button>
                           <Button
                             size="sm"
@@ -310,7 +371,15 @@ export default function StokPage() {
                   </div>
                   <div className="flex gap-2">
                     <Button size="sm" variant="secondary" fullWidth onClick={() => setStokTarget(p)}>
-                      <IconEdit size={14} /> Update Stok
+                      Update Stok
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => openEdit(p)}
+                      aria-label="Edit"
+                    >
+                      <IconEdit size={16} />
                     </Button>
                     <Button
                       size="sm"
@@ -379,14 +448,18 @@ export default function StokPage() {
         </CardBody>
       </Card>
 
-      {/* Add Product Modal */}
+      {/* Product Modal (add / edit) */}
       <Modal
         open={showForm}
-        onClose={() => setShowForm(false)}
-        title="Tambah Barang Baru"
-        description="Catat barang konter atau printing yang dijual."
+        onClose={closeForm}
+        title={editTarget ? "Edit Barang" : "Tambah Barang Baru"}
+        description={
+          editTarget
+            ? "Stok hanya bisa diubah lewat tombol Stok agar tercatat di riwayat."
+            : "Catat barang konter atau printing yang dijual."
+        }
       >
-        <form onSubmit={handleAddProduct} className="space-y-3 pt-2">
+        <form onSubmit={handleSubmitProduct} className="space-y-3 pt-2">
           <Input
             label="Nama barang"
             placeholder="cth: Pulsa 10K"
@@ -421,28 +494,38 @@ export default function StokPage() {
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Input
-              type="number"
-              label="Stok awal"
-              placeholder="0"
-              value={form.stok || ""}
-              onChange={(e) => setForm({ ...form, stok: +e.target.value })}
-            />
+            {editTarget ? (
+              <Input
+                type="number"
+                label="Stok saat ini"
+                value={form.stok}
+                disabled
+                hint="Ubah lewat menu Stok"
+              />
+            ) : (
+              <Input
+                type="number"
+                label="Stok awal"
+                placeholder="0"
+                value={form.stok || ""}
+                onChange={(e) => setForm({ ...form, stok: +e.target.value })}
+              />
+            )}
             <Input
               type="number"
               label="Alert minimum"
               placeholder="5"
               value={form.stok_minimum || ""}
               onChange={(e) => setForm({ ...form, stok_minimum: +e.target.value })}
-              hint="Notifikasi muncul saat stok ≤ angka ini"
+              hint="Notifikasi saat stok ≤ angka ini"
             />
           </div>
           <div className="flex gap-2 pt-2">
-            <Button type="button" variant="secondary" fullWidth onClick={() => setShowForm(false)}>
+            <Button type="button" variant="secondary" fullWidth onClick={closeForm}>
               Batal
             </Button>
             <Button type="submit" fullWidth loading={submitting}>
-              Simpan
+              {editTarget ? "Simpan Perubahan" : "Simpan"}
             </Button>
           </div>
         </form>
