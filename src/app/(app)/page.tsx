@@ -1,22 +1,33 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { Product, Transaction } from "@/lib/types";
+import { StatCard } from "@/components/ui/StatCard";
+import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Skeleton } from "@/components/ui/Skeleton";
+import {
+  IconReceipt,
+  IconWallet,
+  IconTrending,
+  IconAlert,
+  IconBox,
+  IconInbox,
+} from "@/components/ui/Icon";
+import { formatRp, formatDateID } from "@/components/ui/format";
 
 export default function DashboardPage() {
   const supabase = createClient();
-  const [stats, setStats] = useState({ totalKotor: 0, totalBersih: 0, totalTransaksi: 0 });
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({ totalKotor: 0, totalBersih: 0, totalTransaksi: 0, totalItem: 0 });
   const [topProducts, setTopProducts] = useState<{ nama: string; total: number }[]>([]);
   const [lowStock, setLowStock] = useState<Product[]>([]);
 
-  useEffect(() => {
-    loadDashboard();
-  }, []);
-
-  async function loadDashboard() {
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
     const today = new Date().toISOString().split("T")[0];
 
-    // Transaksi hari ini
     const { data: transactions } = await supabase
       .from("transactions")
       .select("*, products(nama)")
@@ -25,9 +36,9 @@ export default function DashboardPage() {
     if (transactions) {
       const totalKotor = transactions.reduce((s, t) => s + t.total_kotor, 0);
       const totalBersih = transactions.reduce((s, t) => s + t.total_bersih, 0);
-      setStats({ totalKotor, totalBersih, totalTransaksi: transactions.length });
+      const totalItem = transactions.reduce((s, t) => s + t.jumlah, 0);
+      setStats({ totalKotor, totalBersih, totalTransaksi: transactions.length, totalItem });
 
-      // Top products
       const productMap: Record<string, number> = {};
       transactions.forEach((t: Transaction) => {
         const nama = t.products?.nama || "Unknown";
@@ -40,74 +51,169 @@ export default function DashboardPage() {
       setTopProducts(sorted);
     }
 
-    // Stok hampir habis
-    const { data: products } = await supabase
-      .from("products")
-      .select("*")
-      .filter("stok", "lte", "stok_minimum" as unknown as number);
-
-    // Manual filter since we can't compare columns directly
     const { data: allProducts } = await supabase.from("products").select("*");
     if (allProducts) {
-      setLowStock(allProducts.filter((p: Product) => p.stok <= p.stok_minimum));
+      setLowStock(
+        allProducts
+          .filter((p: Product) => p.stok <= p.stok_minimum)
+          .sort((a, b) => a.stok - b.stok)
+      );
     }
-  }
+    setLoading(false);
+  }, [supabase]);
 
-  const formatRp = (n: number) => `Rp ${n.toLocaleString("id-ID")}`;
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadDashboard();
+  }, [loadDashboard]);
+
+  const margin =
+    stats.totalKotor > 0 ? ((stats.totalBersih / stats.totalKotor) * 100).toFixed(1) : "0";
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold mb-6">Dashboard Hari Ini</h1>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-        <div className="bg-white p-4 rounded-xl shadow-sm border">
-          <p className="text-sm text-gray-500">Total Transaksi</p>
-          <p className="text-2xl font-bold">{stats.totalTransaksi}</p>
-        </div>
-        <div className="bg-white p-4 rounded-xl shadow-sm border">
-          <p className="text-sm text-gray-500">Pendapatan Kotor</p>
-          <p className="text-2xl font-bold text-blue-600">{formatRp(stats.totalKotor)}</p>
-        </div>
-        <div className="bg-white p-4 rounded-xl shadow-sm border">
-          <p className="text-sm text-gray-500">Pendapatan Bersih</p>
-          <p className="text-2xl font-bold text-green-600">{formatRp(stats.totalBersih)}</p>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-sm text-text-muted mt-0.5">
+            Ringkasan hari ini · {formatDateID(new Date())}
+          </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white p-4 rounded-xl shadow-sm border">
-          <h2 className="font-semibold mb-3">🏆 Barang Terlaris</h2>
-          {topProducts.length === 0 ? (
-            <p className="text-gray-400 text-sm">Belum ada transaksi hari ini</p>
-          ) : (
-            <ul className="space-y-2">
-              {topProducts.map((p, i) => (
-                <li key={i} className="flex justify-between text-sm">
-                  <span>{p.nama}</span>
-                  <span className="font-medium">{p.total} terjual</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        {loading ? (
+          Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-28 rounded-2xl" />
+          ))
+        ) : (
+          <>
+            <StatCard
+              label="Transaksi"
+              value={stats.totalTransaksi}
+              hint={`${stats.totalItem} item terjual`}
+              icon={<IconReceipt size={18} />}
+            />
+            <StatCard
+              label="Omzet"
+              value={formatRp(stats.totalKotor)}
+              hint="Pendapatan kotor"
+              tone="brand"
+              icon={<IconWallet size={18} />}
+            />
+            <StatCard
+              label="Laba Bersih"
+              value={formatRp(stats.totalBersih)}
+              hint={`Margin ${margin}%`}
+              tone="success"
+              icon={<IconTrending size={18} />}
+            />
+            <StatCard
+              label="Stok Menipis"
+              value={lowStock.length}
+              hint={lowStock.length > 0 ? "Perlu restock" : "Semua aman"}
+              tone={lowStock.length > 0 ? "warning" : "default"}
+              icon={<IconAlert size={18} />}
+            />
+          </>
+        )}
+      </div>
 
-        <div className="bg-white p-4 rounded-xl shadow-sm border">
-          <h2 className="font-semibold mb-3">⚠️ Stok Hampir Habis</h2>
-          {lowStock.length === 0 ? (
-            <p className="text-gray-400 text-sm">Semua stok aman</p>
-          ) : (
-            <ul className="space-y-2">
-              {lowStock.map((p) => (
-                <li key={p.id} className="flex justify-between text-sm">
-                  <span>{p.nama}</span>
-                  <span className={`font-medium ${p.stok === 0 ? "text-red-500" : "text-yellow-500"}`}>
-                    {p.stok} tersisa
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+      {/* Two columns */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 sm:gap-6">
+        <Card className="lg:col-span-3">
+          <CardHeader className="flex items-center justify-between">
+            <CardTitle>Barang Terlaris Hari Ini</CardTitle>
+            <span className="text-xs text-text-subtle">Top 5</span>
+          </CardHeader>
+          <CardBody className="!p-0">
+            {loading ? (
+              <div className="p-5 space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-10" />
+                ))}
+              </div>
+            ) : topProducts.length === 0 ? (
+              <EmptyState
+                icon={<IconInbox size={22} />}
+                title="Belum ada penjualan hari ini"
+                description="Mulai transaksi dari halaman Penjualan."
+              />
+            ) : (
+              <ul>
+                {topProducts.map((p, i) => {
+                  const max = topProducts[0]?.total || 1;
+                  const pct = (p.total / max) * 100;
+                  return (
+                    <li
+                      key={i}
+                      className="flex items-center gap-3 px-5 py-3 border-b border-border last:border-b-0"
+                    >
+                      <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-700 flex items-center justify-center text-xs font-semibold">
+                        {i + 1}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{p.nama}</p>
+                        <div className="h-1.5 mt-1.5 bg-surface-muted rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-brand-500 rounded-full transition-all"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                      <span className="text-sm font-semibold num shrink-0">
+                        {p.total}
+                        <span className="text-text-subtle text-xs font-normal ml-1">terjual</span>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <CardHeader className="flex items-center justify-between">
+            <CardTitle>Stok Hampir Habis</CardTitle>
+            {lowStock.length > 0 && (
+              <Badge tone="warning">{lowStock.length}</Badge>
+            )}
+          </CardHeader>
+          <CardBody className="!p-0">
+            {loading ? (
+              <div className="p-5 space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-10" />
+                ))}
+              </div>
+            ) : lowStock.length === 0 ? (
+              <EmptyState
+                icon={<IconBox size={22} />}
+                title="Semua stok aman"
+                description="Tidak ada produk di bawah ambang minimum."
+              />
+            ) : (
+              <ul className="max-h-[20rem] overflow-y-auto">
+                {lowStock.map((p) => (
+                  <li
+                    key={p.id}
+                    className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border last:border-b-0"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{p.nama}</p>
+                      <p className="text-xs text-text-subtle">Min {p.stok_minimum}</p>
+                    </div>
+                    <Badge tone={p.stok === 0 ? "danger" : "warning"}>
+                      {p.stok === 0 ? "Habis" : `${p.stok} tersisa`}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
       </div>
     </div>
   );
