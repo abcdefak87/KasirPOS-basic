@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { Product } from "@/lib/types";
 import { useCachedQuery, patchCache, invalidate, setCache } from "@/lib/cache";
@@ -78,25 +78,28 @@ export default function PenjualanPage() {
   const totalBersih = cartLines.reduce((s, l) => s + l.subtotalBersih, 0);
   const totalItem = cartLines.reduce((s, l) => s + l.qty, 0);
 
-  function addToCart(product: Product) {
-    if (product.stok <= 0) {
-      toast.error(`${product.nama} stok habis`);
-      return;
-    }
-    setCart((prev) => {
-      const existing = prev.find((c) => c.productId === product.id);
-      if (existing) {
-        if (existing.qty + 1 > product.stok) {
-          toast.error(`Stok ${product.nama} hanya ${product.stok}`);
-          return prev;
-        }
-        return prev.map((c) =>
-          c.productId === product.id ? { ...c, qty: c.qty + 1 } : c
-        );
+  const addToCart = useCallback(
+    (product: Product) => {
+      if (product.stok <= 0) {
+        toast.error(`${product.nama} stok habis`);
+        return;
       }
-      return [...prev, { productId: product.id, qty: 1 }];
-    });
-  }
+      setCart((prev) => {
+        const existing = prev.find((c) => c.productId === product.id);
+        if (existing) {
+          if (existing.qty + 1 > product.stok) {
+            toast.error(`Stok ${product.nama} hanya ${product.stok}`);
+            return prev;
+          }
+          return prev.map((c) =>
+            c.productId === product.id ? { ...c, qty: c.qty + 1 } : c
+          );
+        }
+        return [...prev, { productId: product.id, qty: 1 }];
+      });
+    },
+    [toast]
+  );
 
   function changeQty(productId: string, delta: number) {
     const product = productMap.get(productId);
@@ -192,9 +195,15 @@ export default function PenjualanPage() {
     refreshProducts();
   }
 
-  function quantityInCart(productId: string): number {
-    return cart.find((c) => c.productId === productId)?.qty || 0;
-  }
+  const cartQtyMap = useMemo(() => {
+    const m = new Map<string, number>();
+    cart.forEach((c) => m.set(c.productId, c.qty));
+    return m;
+  }, [cart]);
+  const quantityInCart = useCallback(
+    (productId: string) => cartQtyMap.get(productId) || 0,
+    [cartQtyMap]
+  );
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -237,53 +246,14 @@ export default function PenjualanPage() {
               />
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[32rem] overflow-y-auto pr-1 -mr-1">
-                {filtered.map((p) => {
-                  const inCart = quantityInCart(p.id);
-                  const habis = p.stok <= 0;
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      disabled={habis}
-                      onClick={() => addToCart(p)}
-                      className={`relative text-left p-3 rounded-xl border transition-all ${
-                        habis
-                          ? "border-border bg-surface-muted/40 opacity-60 cursor-not-allowed"
-                          : inCart > 0
-                          ? "border-brand-500 bg-brand-50/50 shadow-card"
-                          : "border-border bg-white hover:border-border-strong hover:shadow-card-lg active:scale-[0.98]"
-                      }`}
-                    >
-                      {inCart > 0 && (
-                        <span className="absolute top-2 right-2 min-w-[20px] h-5 px-1.5 rounded-full bg-brand-600 text-white text-[10px] font-bold flex items-center justify-center num">
-                          {inCart}
-                        </span>
-                      )}
-                      <p className="font-medium text-sm leading-snug line-clamp-2 min-h-[2.5rem]">
-                        {p.nama}
-                      </p>
-                      <p className="text-sm num font-semibold mt-1.5">
-                        {formatRp(p.harga_jual)}
-                      </p>
-                      <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                        <Badge tone={p.kategori === "KONTER" ? "konter" : "printing"}>
-                          {p.kategori === "KONTER" ? "Konter" : "Printing"}
-                        </Badge>
-                        <Badge
-                          tone={
-                            habis
-                              ? "danger"
-                              : p.stok <= p.stok_minimum
-                              ? "warning"
-                              : "neutral"
-                          }
-                        >
-                          {habis ? "Habis" : `Stok ${p.stok}`}
-                        </Badge>
-                      </div>
-                    </button>
-                  );
-                })}
+                {filtered.map((p) => (
+                  <ProductCard
+                    key={p.id}
+                    product={p}
+                    inCart={quantityInCart(p.id)}
+                    onAdd={addToCart}
+                  />
+                ))}
               </div>
             )}
           </CardBody>
@@ -354,6 +324,71 @@ type CartLine = {
   subtotalKotor: number;
   subtotalBersih: number;
 };
+
+const ProductCard = memo(
+  function ProductCard({
+    product,
+    inCart,
+    onAdd,
+  }: {
+    product: Product;
+    inCart: number;
+    onAdd: (p: Product) => void;
+  }) {
+    const habis = product.stok <= 0;
+    return (
+      <button
+        type="button"
+        disabled={habis}
+        onClick={() => onAdd(product)}
+        className={`relative text-left p-3 rounded-xl border transition-all ${
+          habis
+            ? "border-border bg-surface-muted/40 opacity-60 cursor-not-allowed"
+            : inCart > 0
+            ? "border-brand-500 bg-brand-50/50 shadow-card"
+            : "border-border bg-white hover:border-border-strong hover:shadow-card-lg active:scale-[0.98]"
+        }`}
+      >
+        {inCart > 0 && (
+          <span className="absolute top-2 right-2 min-w-[20px] h-5 px-1.5 rounded-full bg-brand-600 text-white text-[10px] font-bold flex items-center justify-center num">
+            {inCart}
+          </span>
+        )}
+        <p className="font-medium text-sm leading-snug line-clamp-2 min-h-[2.5rem]">
+          {product.nama}
+        </p>
+        <p className="text-sm num font-semibold mt-1.5">
+          {formatRp(product.harga_jual)}
+        </p>
+        <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+          <Badge tone={product.kategori === "KONTER" ? "konter" : "printing"}>
+            {product.kategori === "KONTER" ? "Konter" : "Printing"}
+          </Badge>
+          <Badge
+            tone={
+              habis
+                ? "danger"
+                : product.stok <= product.stok_minimum
+                ? "warning"
+                : "neutral"
+            }
+          >
+            {habis ? "Habis" : `Stok ${product.stok}`}
+          </Badge>
+        </div>
+      </button>
+    );
+  },
+  (prev, next) =>
+    prev.inCart === next.inCart &&
+    prev.onAdd === next.onAdd &&
+    prev.product.id === next.product.id &&
+    prev.product.nama === next.product.nama &&
+    prev.product.harga_jual === next.product.harga_jual &&
+    prev.product.kategori === next.product.kategori &&
+    prev.product.stok === next.product.stok &&
+    prev.product.stok_minimum === next.product.stok_minimum
+);
 
 interface CartPanelProps {
   lines: CartLine[];
