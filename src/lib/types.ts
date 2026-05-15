@@ -25,6 +25,14 @@ export interface Transaction {
   products?: Product;
 }
 
+export interface BusinessSettings {
+  id: number;
+  brand_name: string;
+  tagline: string;
+  logo_url: string | null;
+  updated_at: string;
+}
+
 export interface StockHistory {
   id: string;
   product_id: string;
