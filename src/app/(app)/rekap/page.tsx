@@ -1,7 +1,8 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { Transaction } from "@/lib/types";
+import { useCachedQuery } from "@/lib/cache";
 import { StatCard } from "@/components/ui/StatCard";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -64,16 +65,12 @@ function presetRange(p: Preset): { from: string; to: string } {
 export default function RekapPage() {
   const supabase = createClient();
   const toast = useToast();
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const today = toIso(new Date());
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
   const [activePreset, setActivePreset] = useState<Preset>("today");
-  const [loading, setLoading] = useState(true);
 
-  const loadRekap = useCallback(async () => {
-    setLoading(true);
-    // exclusive upper bound: query < (to + 1)
+  const fetchRekap = useCallback(async () => {
     const upper = toIso(addDays(new Date(to), 1));
     const { data } = await supabase
       .from("transactions")
@@ -81,14 +78,14 @@ export default function RekapPage() {
       .gte("tanggal", from)
       .lt("tanggal", upper)
       .order("tanggal", { ascending: false });
-    if (data) setTransactions(data);
-    setLoading(false);
+    return (data || []) as Transaction[];
   }, [supabase, from, to]);
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadRekap();
-  }, [loadRekap]);
+  const { data: transactions = [], loading } = useCachedQuery<Transaction[]>(
+    `rekap:${from}:${to}`,
+    fetchRekap,
+    { staleMs: 10_000 }
+  );
 
   function applyPreset(p: Preset) {
     const r = presetRange(p);

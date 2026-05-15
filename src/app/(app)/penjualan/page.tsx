@@ -1,7 +1,8 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { Product } from "@/lib/types";
+import { useCachedQuery, patchCache, invalidate, setCache } from "@/lib/cache";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -27,21 +28,20 @@ type CartItem = {
 export default function PenjualanPage() {
   const supabase = createClient();
   const toast = useToast();
-  const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
 
-  const loadProducts = useCallback(async () => {
+  const fetchProducts = useCallback(async () => {
     const { data } = await supabase.from("products").select("*").order("nama");
-    if (data) setProducts(data);
+    return (data || []) as Product[];
   }, [supabase]);
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadProducts();
-  }, [loadProducts]);
+  const { data: products = [], refresh: refreshProducts } = useCachedQuery<Product[]>(
+    "products",
+    fetchProducts
+  );
 
   const productMap = useMemo(() => {
     const m = new Map<string, Product>();
@@ -153,16 +153,33 @@ export default function PenjualanPage() {
       keterangan: "Penjualan",
     }));
 
+    // Snapshot for rollback
+    const prevProducts = products.slice();
+    const linesSnapshot = cartLines.slice();
+    const totals = { totalItem, totalKotor };
+
+    // Optimistic: decrement stock locally + clear cart
+    patchCache<Product[]>("products", (prev) => {
+      const map = new Map(linesSnapshot.map((l) => [l.product.id, l.qty]));
+      return (prev || []).map((p) =>
+        map.has(p.id) ? { ...p, stok: p.stok - (map.get(p.id) || 0) } : p
+      );
+    });
+    clearCart();
+    setCartOpen(false);
+    toast.success(`Terjual! ${totals.totalItem} item · ${formatRp(totals.totalKotor)}`);
+
     const { error: trxErr } = await supabase.from("transactions").insert(trxRows);
     if (trxErr) {
       setLoading(false);
-      toast.error("Gagal mencatat transaksi: " + trxErr.message);
+      toast.error("Gagal mencatat transaksi, revert: " + trxErr.message);
+      setCache("products", prevProducts);
       return;
     }
     await supabase.from("stock_history").insert(histRows);
 
     await Promise.all(
-      cartLines.map((l) =>
+      linesSnapshot.map((l) =>
         supabase
           .from("products")
           .update({ stok: l.product.stok - l.qty })
@@ -170,13 +187,9 @@ export default function PenjualanPage() {
       )
     );
 
-    toast.success(
-      `Berhasil! ${totalItem} item · ${formatRp(totalKotor)}`
-    );
-    clearCart();
-    setCartOpen(false);
+    invalidate(`transactions:today:${new Date().toISOString().split("T")[0]}`);
     setLoading(false);
-    loadProducts();
+    refreshProducts();
   }
 
   function quantityInCart(productId: string): number {

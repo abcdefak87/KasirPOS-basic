@@ -1,7 +1,8 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase";
 import { Product, Transaction } from "@/lib/types";
+import { useCachedQuery } from "@/lib/cache";
 import { StatCard } from "@/components/ui/StatCard";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -19,53 +20,59 @@ import { formatRp, formatDateID } from "@/components/ui/format";
 
 export default function DashboardPage() {
   const supabase = createClient();
-  const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({ totalKotor: 0, totalBersih: 0, totalTransaksi: 0, totalItem: 0 });
-  const [topProducts, setTopProducts] = useState<{ nama: string; total: number }[]>([]);
-  const [lowStock, setLowStock] = useState<Product[]>([]);
+  const today = new Date().toISOString().split("T")[0];
 
-  const loadDashboard = useCallback(async () => {
-    setLoading(true);
-    const today = new Date().toISOString().split("T")[0];
-
-    const { data: transactions } = await supabase
+  const fetchTrx = useCallback(async () => {
+    const { data } = await supabase
       .from("transactions")
       .select("*, products(nama)")
       .gte("tanggal", today);
+    return (data || []) as Transaction[];
+  }, [supabase, today]);
 
-    if (transactions) {
-      const totalKotor = transactions.reduce((s, t) => s + t.total_kotor, 0);
-      const totalBersih = transactions.reduce((s, t) => s + t.total_bersih, 0);
-      const totalItem = transactions.reduce((s, t) => s + t.jumlah, 0);
-      setStats({ totalKotor, totalBersih, totalTransaksi: transactions.length, totalItem });
-
-      const productMap: Record<string, number> = {};
-      transactions.forEach((t: Transaction) => {
-        const nama = t.products?.nama || "Unknown";
-        productMap[nama] = (productMap[nama] || 0) + t.jumlah;
-      });
-      const sorted = Object.entries(productMap)
-        .map(([nama, total]) => ({ nama, total }))
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 5);
-      setTopProducts(sorted);
-    }
-
-    const { data: allProducts } = await supabase.from("products").select("*");
-    if (allProducts) {
-      setLowStock(
-        allProducts
-          .filter((p: Product) => p.stok <= p.stok_minimum)
-          .sort((a, b) => a.stok - b.stok)
-      );
-    }
-    setLoading(false);
+  const fetchProducts = useCallback(async () => {
+    const { data } = await supabase.from("products").select("*").order("nama");
+    return (data || []) as Product[];
   }, [supabase]);
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadDashboard();
-  }, [loadDashboard]);
+  const { data: transactions = [], loading: loadingTrx } = useCachedQuery<Transaction[]>(
+    `transactions:today:${today}`,
+    fetchTrx,
+    { staleMs: 10_000 }
+  );
+  const { data: allProducts = [], loading: loadingProducts } = useCachedQuery<Product[]>(
+    "products",
+    fetchProducts
+  );
+
+  const loading = loadingTrx || loadingProducts;
+
+  const stats = useMemo(() => {
+    const totalKotor = transactions.reduce((s, t) => s + t.total_kotor, 0);
+    const totalBersih = transactions.reduce((s, t) => s + t.total_bersih, 0);
+    const totalItem = transactions.reduce((s, t) => s + t.jumlah, 0);
+    return { totalKotor, totalBersih, totalTransaksi: transactions.length, totalItem };
+  }, [transactions]);
+
+  const topProducts = useMemo(() => {
+    const productMap: Record<string, number> = {};
+    transactions.forEach((t: Transaction) => {
+      const nama = t.products?.nama || "Unknown";
+      productMap[nama] = (productMap[nama] || 0) + t.jumlah;
+    });
+    return Object.entries(productMap)
+      .map(([nama, total]) => ({ nama, total }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+  }, [transactions]);
+
+  const lowStock = useMemo(
+    () =>
+      allProducts
+        .filter((p) => p.stok <= p.stok_minimum)
+        .sort((a, b) => a.stok - b.stok),
+    [allProducts]
+  );
 
   const margin =
     stats.totalKotor > 0 ? ((stats.totalBersih / stats.totalKotor) * 100).toFixed(1) : "0";

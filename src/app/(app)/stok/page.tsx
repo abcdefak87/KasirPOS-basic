@@ -1,7 +1,8 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { Product, Kategori, StockHistory } from "@/lib/types";
+import { useCachedQuery, patchCache, setCache, invalidate } from "@/lib/cache";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input, Select } from "@/components/ui/Input";
@@ -25,9 +26,6 @@ type FilterKey = "ALL" | Kategori;
 export default function StokPage() {
   const supabase = createClient();
   const toast = useToast();
-  const [products, setProducts] = useState<Product[]>([]);
-  const [history, setHistory] = useState<StockHistory[]>([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Product | null>(null);
   const [stokTarget, setStokTarget] = useState<Product | null>(null);
@@ -50,25 +48,28 @@ export default function StokPage() {
     keterangan: "",
   });
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    const [{ data }, { data: hist }] = await Promise.all([
-      supabase.from("products").select("*").order("nama"),
-      supabase
-        .from("stock_history")
-        .select("*, products(nama)")
-        .order("tanggal", { ascending: false })
-        .limit(20),
-    ]);
-    if (data) setProducts(data);
-    if (hist) setHistory(hist);
-    setLoading(false);
+  const fetchProducts = useCallback(async () => {
+    const { data } = await supabase.from("products").select("*").order("nama");
+    return (data || []) as Product[];
   }, [supabase]);
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadData();
-  }, [loadData]);
+  const fetchHistory = useCallback(async () => {
+    const { data } = await supabase
+      .from("stock_history")
+      .select("*, products(nama)")
+      .order("tanggal", { ascending: false })
+      .limit(20);
+    return (data || []) as StockHistory[];
+  }, [supabase]);
+
+  const { data: products = [], loading: loadingProducts, refresh: refreshProducts } =
+    useCachedQuery<Product[]>("products", fetchProducts);
+  const { data: history = [], refresh: refreshHistory } = useCachedQuery<StockHistory[]>(
+    "stock_history",
+    fetchHistory
+  );
+
+  const loading = loadingProducts;
 
   function resetForm() {
     setForm({ nama: "", kategori: "KONTER", harga_modal: 0, harga_jual: 0, stok: 0, stok_minimum: 5 });
@@ -106,34 +107,68 @@ export default function StokPage() {
       return;
     }
     setSubmitting(true);
+
     if (editTarget) {
-      const { error } = await supabase
-        .from("products")
-        .update({
-          nama: form.nama,
-          kategori: form.kategori,
-          harga_modal: form.harga_modal,
-          harga_jual: form.harga_jual,
-          stok_minimum: form.stok_minimum,
-        })
-        .eq("id", editTarget.id);
-      setSubmitting(false);
-      if (error) {
-        toast.error("Gagal menyimpan: " + error.message);
-        return;
-      }
+      const target = editTarget;
+      const updates = {
+        nama: form.nama,
+        kategori: form.kategori,
+        harga_modal: form.harga_modal,
+        harga_jual: form.harga_jual,
+        stok_minimum: form.stok_minimum,
+      };
+      // Optimistic
+      patchCache<Product[]>("products", (prev) =>
+        (prev || []).map((p) => (p.id === target.id ? { ...p, ...updates } : p))
+      );
+      closeForm();
       toast.success(`"${form.nama}" diperbarui`);
-    } else {
-      const { error } = await supabase.from("products").insert(form);
+      const { error } = await supabase.from("products").update(updates).eq("id", target.id);
       setSubmitting(false);
       if (error) {
-        toast.error("Gagal menambah barang: " + error.message);
+        toast.error("Gagal menyimpan, revert: " + error.message);
+        refreshProducts();
+      }
+    } else {
+      // Optimistic insert with temp id
+      const tempId = `temp-${Date.now()}`;
+      const optimistic: Product = {
+        id: tempId,
+        nama: form.nama,
+        kategori: form.kategori,
+        harga_modal: form.harga_modal,
+        harga_jual: form.harga_jual,
+        stok: form.stok,
+        stok_minimum: form.stok_minimum,
+        created_at: new Date().toISOString(),
+      };
+      patchCache<Product[]>("products", (prev) => {
+        const next = [...(prev || []), optimistic];
+        next.sort((a, b) => a.nama.localeCompare(b.nama));
+        return next;
+      });
+      const formSnapshot = { ...form };
+      closeForm();
+      toast.success(`Barang "${formSnapshot.nama}" ditambahkan`);
+      const { data, error } = await supabase
+        .from("products")
+        .insert(formSnapshot)
+        .select()
+        .single();
+      setSubmitting(false);
+      if (error) {
+        toast.error("Gagal menambah: " + error.message);
+        // rollback
+        patchCache<Product[]>("products", (prev) =>
+          (prev || []).filter((p) => p.id !== tempId)
+        );
         return;
       }
-      toast.success(`Barang "${form.nama}" ditambahkan`);
+      // Replace temp with real
+      patchCache<Product[]>("products", (prev) =>
+        (prev || []).map((p) => (p.id === tempId ? (data as Product) : p))
+      );
     }
-    closeForm();
-    loadData();
   }
 
   async function handleStokUpdate() {
@@ -142,44 +177,63 @@ export default function StokPage() {
       toast.error("Jumlah harus lebih dari 0");
       return;
     }
-    setSubmitting(true);
+    const target = stokTarget;
+    const input = { ...stokInput };
     const newStok =
-      stokInput.tipe === "MASUK"
-        ? stokTarget.stok + stokInput.jumlah
-        : stokTarget.stok - stokInput.jumlah;
+      input.tipe === "MASUK" ? target.stok + input.jumlah : target.stok - input.jumlah;
     if (newStok < 0) {
-      setSubmitting(false);
       toast.error("Stok tidak boleh negatif");
       return;
     }
-    await supabase.from("products").update({ stok: newStok }).eq("id", stokTarget.id);
-    await supabase.from("stock_history").insert({
-      product_id: stokTarget.id,
-      tipe: stokInput.tipe,
-      jumlah: stokInput.jumlah,
-      keterangan: stokInput.keterangan,
-    });
-    setSubmitting(false);
-    toast.success(
-      `${stokInput.tipe === "MASUK" ? "+" : "-"}${stokInput.jumlah} stok ${stokTarget.nama}`
+    setSubmitting(true);
+    // Optimistic
+    patchCache<Product[]>("products", (prev) =>
+      (prev || []).map((p) => (p.id === target.id ? { ...p, stok: newStok } : p))
     );
     setStokTarget(null);
     setStokInput({ jumlah: 0, tipe: "MASUK", keterangan: "" });
-    loadData();
+    toast.success(
+      `${input.tipe === "MASUK" ? "+" : "-"}${input.jumlah} stok ${target.nama}`
+    );
+
+    const [{ error: upErr }] = await Promise.all([
+      supabase.from("products").update({ stok: newStok }).eq("id", target.id),
+      supabase.from("stock_history").insert({
+        product_id: target.id,
+        tipe: input.tipe,
+        jumlah: input.jumlah,
+        keterangan: input.keterangan,
+      }),
+    ]);
+    setSubmitting(false);
+    if (upErr) {
+      toast.error("Gagal update stok, revert: " + upErr.message);
+      refreshProducts();
+    }
+    invalidate("stock_history");
+    refreshHistory();
   }
 
   async function handleDelete() {
     if (!deleteTarget) return;
+    const target = deleteTarget;
     setSubmitting(true);
-    const { error } = await supabase.from("products").delete().eq("id", deleteTarget.id);
+    // Optimistic remove
+    const prev = (getCachedProducts() || []).slice();
+    patchCache<Product[]>("products", (p) => (p || []).filter((x) => x.id !== target.id));
+    setDeleteTarget(null);
+    toast.success(`"${target.nama}" dihapus`);
+
+    const { error } = await supabase.from("products").delete().eq("id", target.id);
     setSubmitting(false);
     if (error) {
-      toast.error("Gagal menghapus: " + error.message);
-      return;
+      toast.error("Gagal menghapus, revert: " + error.message);
+      setCache("products", prev);
     }
-    toast.success(`"${deleteTarget.nama}" dihapus`);
-    setDeleteTarget(null);
-    loadData();
+  }
+
+  function getCachedProducts() {
+    return products;
   }
 
   const filtered = useMemo(() => {
